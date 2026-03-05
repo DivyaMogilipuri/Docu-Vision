@@ -2,7 +2,7 @@
 
 import uuid
 
-from services.extraction_service import extract_from_pdf, extract_from_docx
+from services.extraction_service import extract_from_pdf_layout_aware, extract_from_docx
 from services.cleaning_service import normalize_text
 
 
@@ -15,7 +15,7 @@ def ingest_document(
 
     # 1️⃣ Extract
     if file_type == "pdf":
-        extracted = extract_from_pdf(filepath, doc_type=doc_type)
+        extracted = extract_from_pdf_layout_aware(filepath)#, doc_type=doc_type
 
     elif file_type == "docx":
         extracted = extract_from_docx(filepath, doc_type=doc_type)

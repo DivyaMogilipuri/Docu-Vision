@@ -1,0 +1,179 @@
+from PyPDF2 import  PdfReader
+from pdf2image import convert_from_path
+import pytesseract
+from difflib import SequenceMatcher
+from docx import Document
+import re
+import camelot
+import uuid
+import os
+import fitz
+from PIL import Image
+import io
+p_path="C:/Program Files/poppler-25.11.0/Library/bin"
+
+def _clean(text: str) -> str:
+    """Normalize whitespace."""
+    return re.sub(r"\s+", " ", text or "").strip()
+
+def _ocr_images_from_page(page: fitz.Page) -> str:
+    """
+    OCR only embedded raster images in a PDF page.
+    Prevents duplicate OCR of digital text.
+    """
+    ocr_texts = []
+
+    for img in page.get_images(full=True):
+        xref = img[0]
+        base_image = page.parent.extract_image(xref)
+        pix = fitz.Pixmap(page.parent, xref)
+
+        # Convert CMYK → RGB if needed
+        if pix.n > 4:
+            pix = fitz.Pixmap(fitz.csRGB, pix)
+
+        # Ignore very small images (logos/icons)
+        if pix.width < 50 or pix.height < 50:
+            continue
+
+        # Convert pixmap to PIL Image
+        img_bytes = pix.tobytes("png")
+        pil_img = Image.open(io.BytesIO(img_bytes))
+
+        # Run OCR
+        img_text = pytesseract.image_to_string(pil_img)
+
+        # Clean OCR text
+        cleaned = _clean(img_text)
+        if cleaned:
+            ocr_texts.append(cleaned)
+
+    return " ".join(ocr_texts)
+
+
+def extract_from_pdf(filepath: str, doc_type="general") -> dict:
+    """
+    Adaptive PDF extractor:
+    - Extracts digital text
+    - OCR only embedded images
+    - Extracts tables via Camelot
+    """
+    reader = PdfReader(filepath)
+    doc = fitz.open(filepath)
+    blocks = []
+
+    for i, (pdf_page, fitz_page) in enumerate(zip(reader.pages, doc)):
+        page_number = i + 1
+
+        # 1️⃣ Extract digital text
+        digital_text = _clean(pdf_page.extract_text())
+
+        # 2️⃣ OCR only images
+        image_text = _ocr_images_from_page(fitz_page)
+
+        # 3️⃣ Merge without duplicates
+        combined = _clean(f"{digital_text} {image_text}")
+
+        if combined:
+            blocks.append({
+                "block_id": str(uuid.uuid4()),
+                "type": "paragraph",
+                "page": page_number,
+                "text": combined
+            })
+
+    # 4️⃣ Tables
+    try:
+        tables = camelot.read_pdf(filepath, pages="all")
+        for table in tables:
+            table_text = "\n".join(
+                [" | ".join(row) for row in table.df.values.tolist()]
+            )
+            blocks.append({
+                "block_id": str(uuid.uuid4()),
+                "type": "table",
+                "page": None,
+                "text": table_text
+            })
+    except Exception:
+        pass
+
+    doc.close()
+
+    return {
+        "doc_type": doc_type,
+        "source": "pdf",
+        "blocks": blocks
+    }
+
+
+def extract_from_docx(filepath: str, doc_type="general") -> dict:
+    document = Document(filepath)
+    blocks = []
+
+    # Paragraphs
+    for para in document.paragraphs:
+        text = re.sub(r"\s+", " ", para.text).strip()
+
+        if text:
+            blocks.append({
+                "block_id": str(uuid.uuid4()),
+                "type": "paragraph",
+                "page": None,   # DOCX does not expose real page numbers
+                "text": text
+            })
+
+    # Tables
+    for table in document.tables:
+        table_rows = []
+
+        for row in table.rows:
+            row_data = [
+                re.sub(r"\s+", " ", cell.text).strip()
+                for cell in row.cells
+                if cell.text.strip()
+            ]
+
+            if row_data:
+                table_rows.append(" | ".join(row_data))
+
+        if table_rows:
+            blocks.append({
+                "block_id": str(uuid.uuid4()),
+                "type": "table",
+                "page": None,
+                "text": "\n".join(table_rows)
+            })
+
+    # Headers
+    for section in document.sections:
+        for para in section.header.paragraphs:
+            text = re.sub(r"\s+", " ", para.text).strip()
+            if text:
+                blocks.append({
+                    "block_id": str(uuid.uuid4()),
+                    "type": "header",
+                    "page": None,
+                    "text": text
+                })
+
+    # Footers
+    for section in document.sections:
+        for para in section.footer.paragraphs:
+            text = re.sub(r"\s+", " ", para.text).strip()
+            if text:
+                blocks.append({
+                    "block_id": str(uuid.uuid4()),
+                    "type": "footer",
+                    "page": None,
+                    "text": text
+                })
+
+    return {
+        "doc_type": doc_type,
+        "source": "docx",
+        "blocks": blocks
+    }
+
+    
+    

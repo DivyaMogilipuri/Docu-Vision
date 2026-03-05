@@ -2,7 +2,7 @@ from fastapi import File,UploadFile,APIRouter,HTTPException
 import os
 import shutil
 import uuid
-from services.extraction_service import extract_from_pdf,extract_from_docx
+from services.extraction_service import extract_from_pdf_layout_aware,extract_from_docx
 from services.ingestion import ingest_document
 
 
