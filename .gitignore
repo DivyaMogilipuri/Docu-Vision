@@ -2,7 +2,7 @@
 docuenv/
 venv/
 .env/
-
+backend/app/uploads
 # Python
 __pycache__/
 *.pyc
@@ -10,5 +10,5 @@ __pycache__/
 *.pyd
 
 # OS
-.DS_Store
+.DS_Store 
 Thumbs.db

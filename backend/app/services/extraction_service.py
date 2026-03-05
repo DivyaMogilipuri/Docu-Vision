@@ -1,4 +1,4 @@
-import fitz  # PyMuPDF
+import fitz
 import pytesseract
 from pytesseract import Output
 from pdf2image import convert_from_path
@@ -6,35 +6,63 @@ from docx import Document
 from PIL import Image
 import uuid
 import re
-from typing import List, Dict
 import io
+import numpy as np
+import cv2
+from typing import List, Dict
 
-# Set your poppler path
 POPPLER_PATH = r"C:/Program Files/poppler-25.11.0/Library/bin"
 
+TESS_CONFIG = "--oem 3 --psm 6 -l eng"
 
+import fitz
+import pytesseract
+from pytesseract import Output
+from PIL import Image
+import io
+import uuid
+import cv2
+import numpy as np
+
+import fitz
+import pytesseract
+from pytesseract import Output
+from docx import Document
+from PIL import Image
+import uuid
+import re
+import io
+from typing import List, Dict
 
 # =====================================================
 # DIGITAL TEXT EXTRACTION
 # =====================================================
 
 def extract_digital_blocks(page, page_number, document_id):
+
     blocks = []
     text_dict = page.get_text("dict")
 
     for block in text_dict["blocks"]:
-        if block["type"] == 0:  # text block
+
+        if block["type"] == 0:
+
             for line in block["lines"]:
+
                 line_text = ""
                 x0 = y0 = x1 = y1 = None
 
                 for span in line["spans"]:
+
                     if not line_text:
                         x0, y0 = span["bbox"][0], span["bbox"][1]
+
                     x1, y1 = span["bbox"][2], span["bbox"][3]
+
                     line_text += span["text"] + " "
 
                 if line_text.strip():
+
                     blocks.append({
                         "block_id": str(uuid.uuid4()),
                         "document_id": document_id,
@@ -51,70 +79,106 @@ def extract_digital_blocks(page, page_number, document_id):
 
 
 # =====================================================
-# OCR FROM EMBEDDED IMAGES ONLY
+# OCR WORD EXTRACTION
 # =====================================================
 
-def extract_ocr_from_images(page, page_number, document_id):
+def extract_words_from_image(image, page, page_number, document_id):
 
     blocks = []
-    image_list = page.get_images(full=True)
 
-    for img in image_list:
+    ocr_data = pytesseract.image_to_data(image, output_type=Output.DICT)
 
-        xref = img[0]
-        base_image = page.parent.extract_image(xref)
-        image_bytes = base_image["image"]
+    scale_x = page.rect.width / image.width
+    scale_y = page.rect.height / image.height
 
-        image = Image.open(io.BytesIO(image_bytes))
+    for i in range(len(ocr_data["text"])):
 
-        # Get image rectangle on page
-        rects = page.get_image_rects(xref)
-        if not rects:
-            continue
+        word = ocr_data["text"][i].strip()
 
-        img_rect = rects[0]
+        try:
+            conf = float(ocr_data["conf"][i])
+        except:
+            conf = -1
 
-        scale_x = img_rect.width / image.width
-        scale_y = img_rect.height / image.height
+        if word and conf > 20:
 
-        ocr_data = pytesseract.image_to_data(image, output_type=Output.DICT)
+            x = ocr_data["left"][i]
+            y = ocr_data["top"][i]
+            w = ocr_data["width"][i]
+            h = ocr_data["height"][i]
 
-        for i in range(len(ocr_data["text"])):
-
-            word = ocr_data["text"][i].strip()
-            conf = int(ocr_data["conf"][i]) if ocr_data["conf"][i].isdigit() else -1
-
-            if word and conf > 40:
-
-            
-
-                x = ocr_data["left"][i]
-                y = ocr_data["top"][i]
-                w = ocr_data["width"][i]
-                h = ocr_data["height"][i]
-
-                # Convert image coords → page coords
-                x0 = img_rect.x0 + (x * scale_x)
-                y0 = img_rect.y0 + (y * scale_y)
-                x1 = img_rect.x0 + ((x + w) * scale_x)
-                y1 = img_rect.y0 + ((y + h) * scale_y)
-
-                blocks.append({
-                    "block_id": str(uuid.uuid4()),
-                    "document_id": document_id,
-                    "type": "ocr_word",
-                    "page_number": page_number,
-                    "text": word,
-                    "x0": x0,
-                    "y0": y0,
-                    "x1": x1,
-                    "y1": y1
-                })
+            blocks.append({
+                "block_id": str(uuid.uuid4()),
+                "document_id": document_id,
+                "type": "ocr_word",
+                "page_number": page_number,
+                "text": word,
+                "x0": x * scale_x,
+                "y0": y * scale_y,
+                "x1": (x + w) * scale_x,
+                "y1": (y + h) * scale_y
+            })
 
     return blocks
 
+
 # =====================================================
-# GROUP OCR WORDS INTO LINES
+# GENERIC TEXT REGION DETECTION
+# =====================================================
+
+def detect_text_regions(word_blocks, x_threshold=150, y_threshold=50):
+
+    regions = []
+
+    for block in word_blocks:
+
+        bx0, by0, bx1, by1 = block["x0"], block["y0"], block["x1"], block["y1"]
+
+        placed = False
+
+        for region in regions:
+
+            rx0, ry0, rx1, ry1 = region
+
+            if abs(bx0 - rx0) < x_threshold and abs(by0 - ry0) < y_threshold:
+
+                region[0] = min(rx0, bx0)
+                region[1] = min(ry0, by0)
+                region[2] = max(rx1, bx1)
+                region[3] = max(ry1, by1)
+
+                placed = True
+                break
+
+        if not placed:
+            regions.append([bx0, by0, bx1, by1])
+
+    return regions
+
+
+# =====================================================
+# CROP REGIONS
+# =====================================================
+
+def crop_regions(page, regions):
+
+    cropped_images = []
+
+    for r in regions:
+
+        rect = fitz.Rect(r[0], r[1], r[2], r[3])
+
+        pix = page.get_pixmap(clip=rect, dpi=300)
+
+        image = Image.open(io.BytesIO(pix.tobytes()))
+
+        cropped_images.append(image)
+
+    return cropped_images
+
+
+# =====================================================
+# GROUP WORDS INTO LINES
 # =====================================================
 
 def group_words_into_lines(blocks, y_threshold=12):
@@ -140,16 +204,13 @@ def group_words_into_lines(blocks, y_threshold=12):
         center_y = (block["y0"] + block["y1"]) / 2
 
         if current_y is None:
-
             current_y = center_y
             current_line.append(block)
 
         elif abs(center_y - current_y) <= y_threshold:
-
             current_line.append(block)
 
         else:
-
             lines.append(current_line)
             current_line = [block]
             current_y = center_y
@@ -178,12 +239,10 @@ def group_words_into_lines(blocks, y_threshold=12):
         })
 
     return merged_lines
-
-
-
 # =====================================================
-# MULTI-COLUMN DETECTION
+# DETECT COLUMNS
 # =====================================================
+
 def detect_columns(page_blocks, page_width):
 
     if not page_blocks:
@@ -214,7 +273,9 @@ def detect_columns(page_blocks, page_width):
     columns.append(current_column)
 
     return columns
-
+# =====================================================
+# LAYOUT SORT
+# =====================================================
 
 def layout_sort(all_blocks, doc):
 
@@ -243,76 +304,51 @@ def layout_sort(all_blocks, doc):
     return final_blocks
 
 # =====================================================
-# FULL PAGE OCR
-# =====================================================
-def extract_full_page_ocr(page, page_number, document_id):
-
-    blocks = []
-
-    pix = page.get_pixmap(dpi=300)
-
-    image = Image.open(io.BytesIO(pix.tobytes()))
-
-    ocr_data = pytesseract.image_to_data(image, output_type=Output.DICT)
-    scale_x = page.rect.width / image.width
-    scale_y = page.rect.height / image.height
-
-
-    for i in range(len(ocr_data["text"])):
-
-        word = ocr_data["text"][i].strip()
-        conf = int(ocr_data["conf"][i]) if ocr_data["conf"][i].isdigit() else -1
-
-        if word and conf > 40:
-
-        
-
-            x = ocr_data["left"][i]
-            y = ocr_data["top"][i]
-            w = ocr_data["width"][i]
-            h = ocr_data["height"][i]
-           
-            blocks.append({
-        "block_id": str(uuid.uuid4()),
-        "document_id": document_id,
-        "type": "ocr_word",
-        "page_number": page_number,
-        "text": word,
-        "x0": x * scale_x,
-        "y0": y * scale_y,
-        "x1": (x + w) * scale_x,
-        "y1": (y + h) * scale_y
-})
-
-    return group_words_into_lines(blocks)
-
-# =====================================================
 # MAIN PDF PIPELINE
 # =====================================================
 
 def extract_from_pdf_layout_aware(pdf_path):
+
     document_id = str(uuid.uuid4())
+
     doc = fitz.open(pdf_path)
 
     all_blocks = []
 
     for page_index, page in enumerate(doc):
+
         page_number = page_index + 1
 
         digital_blocks = extract_digital_blocks(page, page_number, document_id)
 
-        ocr_word_blocks = extract_ocr_from_images(page, page_number, document_id)
-        
+        if digital_blocks:
 
-        if not digital_blocks and not ocr_word_blocks:
-            scanned_blocks = extract_full_page_ocr(page, page_number, document_id)
-            page_blocks = scanned_blocks
-        else:
-            ocr_line_blocks = group_words_into_lines(ocr_word_blocks)
-            page_blocks = digital_blocks + ocr_line_blocks
+            all_blocks.extend(digital_blocks)
+            continue
 
-        # page_blocks = digital_blocks + ocr_line_blocks
-        all_blocks.extend(page_blocks)
+        # If no digital text → run OCR pipeline
+
+        pix = page.get_pixmap(dpi=300)
+
+        page_image = Image.open(io.BytesIO(pix.tobytes()))
+
+        word_blocks = extract_words_from_image(page_image, page, page_number, document_id)
+
+        regions = detect_text_regions(word_blocks)
+
+        cropped_images = crop_regions(page, regions)
+
+        region_words = []
+
+        for img in cropped_images:
+
+            region_words.extend(
+                extract_words_from_image(img, page, page_number, document_id)
+            )
+
+        line_blocks = group_words_into_lines(region_words)
+
+        all_blocks.extend(line_blocks)
 
     all_blocks = layout_sort(all_blocks, doc)
 
@@ -328,15 +364,20 @@ def extract_from_pdf_layout_aware(pdf_path):
 # DOCX EXTRACTION
 # =====================================================
 
-def extract_from_docx(filepath: str, doc_type="general") -> dict:
+def extract_from_docx(filepath: str, doc_type="general"):
+
     document_id = str(uuid.uuid4())
+
     document = Document(filepath)
 
     blocks = []
 
     for para in document.paragraphs:
+
         text = re.sub(r"\s+", " ", para.text).strip()
+
         if text:
+
             blocks.append({
                 "block_id": str(uuid.uuid4()),
                 "document_id": document_id,
@@ -346,17 +387,22 @@ def extract_from_docx(filepath: str, doc_type="general") -> dict:
             })
 
     for table in document.tables:
+
         table_rows = []
+
         for row in table.rows:
+
             row_data = [
                 re.sub(r"\s+", " ", cell.text).strip()
                 for cell in row.cells
                 if cell.text.strip()
             ]
+
             if row_data:
                 table_rows.append(" | ".join(row_data))
 
         if table_rows:
+
             blocks.append({
                 "block_id": str(uuid.uuid4()),
                 "document_id": document_id,
