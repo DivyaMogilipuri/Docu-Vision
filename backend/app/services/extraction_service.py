@@ -61,6 +61,8 @@ def extract_digital_blocks(page, page_number, document_id):
 
                     line_text += span["text"] + " "
 
+                print("page number from digital blocks",page_number)
+
                 if line_text.strip():
 
                     blocks.append({
@@ -106,6 +108,8 @@ def extract_words_from_image(image, page, page_number, document_id):
             y = ocr_data["top"][i]
             w = ocr_data["width"][i]
             h = ocr_data["height"][i]
+
+            print("page no. from extract words frm image",page_number)
 
             blocks.append({
                 "block_id": str(uuid.uuid4()),
@@ -226,6 +230,8 @@ def group_words_into_lines(blocks, y_threshold=12):
 
         text = " ".join(b["text"] for b in line)
 
+        print("page nuber from group words into lines ",line[0]["page_number"])
+
         merged_lines.append({
             "block_id": str(uuid.uuid4()),
             "document_id": line[0]["document_id"],
@@ -273,10 +279,54 @@ def detect_columns(page_blocks, page_width):
     columns.append(current_column)
 
     return columns
+
+def merge_lines_into_paragraphs(blocks, y_gap_threshold=18, x_align_threshold=30):
+
+    if not blocks:
+        return []
+
+    merged_blocks = []
+    current_para = blocks[0].copy()
+
+    for block in blocks[1:]:
+
+        text = block["text"].strip()
+
+        vertical_gap = block["y0"] - current_para["y1"]
+
+        x_aligned = abs(block["x0"] - current_para["x0"]) < x_align_threshold
+
+        prev_text = current_para["text"].strip()
+
+        end_punctuation = prev_text.endswith((".", "!", "?", ":"))
+
+        is_bullet = bool(re.match(r"^[-•●*]", text))
+
+        if (
+            vertical_gap < y_gap_threshold
+            and x_aligned
+            and not end_punctuation
+            and not is_bullet
+        ):
+
+            current_para["text"] += " " + text
+
+            current_para["x0"] = min(current_para["x0"], block["x0"])
+            current_para["y0"] = min(current_para["y0"], block["y0"])
+            current_para["x1"] = max(current_para["x1"], block["x1"])
+            current_para["y1"] = max(current_para["y1"], block["y1"])
+
+        else:
+
+            merged_blocks.append(current_para)
+            current_para = block.copy()
+
+    merged_blocks.append(current_para)
+
+    return merged_blocks
 # =====================================================
 # LAYOUT SORT
 # =====================================================
-
 def layout_sort(all_blocks, doc):
 
     final_blocks = []
@@ -298,10 +348,44 @@ def layout_sort(all_blocks, doc):
         columns = sorted(columns, key=lambda col: min(b["x0"] for b in col))
 
         for col in columns:
+
+            # sort top → bottom
             col_sorted = sorted(col, key=lambda b: (b["y0"], b["x0"]))
-            final_blocks.extend(col_sorted)
+
+            # MERGE PARAGRAPHS INSIDE COLUMN
+            merged = merge_lines_into_paragraphs(col_sorted)
+
+            final_blocks.extend(merged)
 
     return final_blocks
+# def layout_sort(all_blocks, doc):
+
+#     final_blocks = []
+#     pages = {}
+
+#     for b in all_blocks:
+#         pages.setdefault(b["page_number"], []).append(b)
+
+#     for page_number in sorted(pages.keys()):
+#         print("page number from layout sort",page_number)
+
+#         page_blocks = pages[page_number]
+
+#         page = doc[page_number - 1]
+#         page_width = page.rect.width
+
+#         columns = detect_columns(page_blocks, page_width)
+
+#         # sort columns left → right
+#         columns = sorted(columns, key=lambda col: min(b["x0"] for b in col))
+
+#         for col in columns:
+#             col_sorted = sorted(col, key=lambda b: (b["y0"], b["x0"]))
+#             final_blocks.extend(col_sorted)
+
+#     return final_blocks
+
+
 
 # =====================================================
 # MAIN PDF PIPELINE
@@ -318,6 +402,8 @@ def extract_from_pdf_layout_aware(pdf_path):
     for page_index, page in enumerate(doc):
 
         page_number = page_index + 1
+        
+        print("page number from extract pdf aware",page_number,"page index ",page_index)
 
         digital_blocks = extract_digital_blocks(page, page_number, document_id)
 
@@ -331,6 +417,7 @@ def extract_from_pdf_layout_aware(pdf_path):
         pix = page.get_pixmap(dpi=300)
 
         page_image = Image.open(io.BytesIO(pix.tobytes()))
+
 
         word_blocks = extract_words_from_image(page_image, page, page_number, document_id)
 
@@ -351,6 +438,9 @@ def extract_from_pdf_layout_aware(pdf_path):
         all_blocks.extend(line_blocks)
 
     all_blocks = layout_sort(all_blocks, doc)
+    
+    for b in all_blocks[:]:
+        print("from all PAGE:", b.get("page_number"), "| TEXT:", b.get("text"))
 
     return {
         "document_id": document_id,

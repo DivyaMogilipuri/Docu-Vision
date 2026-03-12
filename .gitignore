@@ -2,7 +2,7 @@
 docuenv/
 venv/
 .env/
-backend/app/uploads
+backend/app/uploads/
 # Python
 __pycache__/
 *.pyc

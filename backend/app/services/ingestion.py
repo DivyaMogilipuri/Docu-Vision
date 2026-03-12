@@ -40,9 +40,10 @@ def ingest_document(
                 "document_id": document_id,
                 "source_block_id": block["block_id"],  # reference to raw block
                 "type": block.get("type"),
-                "page_number": block.get("page"),
+                "page_number": block.get("page_number"),
                 "text": clean_text
             })
+            
 
     return {
         "document_id": document_id,
